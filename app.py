@@ -131,6 +131,7 @@ def setup_llm():
         Important: Email address is required for all appointments. Always ask for it if not provided.
         
         When you identify appointment details, format your response with JSON-like tags:
+         
         <APPOINTMENT_DETAILS>
         name: [extracted name]
         email: [extracted email]
@@ -155,7 +156,7 @@ def setup_llm():
         memory=memory
     )
     
-    return chain
+    return chain, llm
 
 # Process the LLM response to extract appointment details
 def extract_appointment_details(response_text):
@@ -209,13 +210,52 @@ def extract_appointment_details(response_text):
     
     return details, clean_response
 
+# Generate a confirmation message using the LLM
+def generate_confirmation_message(llm, details, clean_response):
+    prompt = f"""
+    Based on our conversation, I've booked an appointment with the following details:
+    - Name: {details['name']}
+    - Email: {details['email']}
+    - Date: {details['date']}
+    - Time: {details['time']}
+    - Purpose: {details.get('purpose', 'General appointment')}
+    """
+    
+    try:
+        confirmation = llm.invoke(prompt).content
+        # Combine the original clean response with the generated confirmation
+        if clean_response:
+            return f"{clean_response}\n\n{confirmation}"
+        return confirmation
+    except Exception as e:
+        # Fallback if the LLM fails
+        return f"""Appointment confirmed!
+        
+        Your appointment has been scheduled for {details['date']} at {details['time']}.
+        
+        Details:
+        - Name: {details['name']}
+        - Email: {details['email']}
+        - Purpose: {details.get('purpose', 'General appointment')}
+        
+        Thank you for booking with us!"""
+
 # Helper function to validate email format
 def is_valid_email(email):
     email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return bool(re.match(email_pattern, email))
 
+# Get the table structure to determine column order
+def get_table_structure():
+    conn = sqlite3.connect('appointments.db')
+    c = conn.cursor()
+    c.execute("PRAGMA table_info(appointments)")
+    columns = c.fetchall()
+    conn.close()
+    return [col[1] for col in columns]
+
 # Chatbot logic
-def process_message(user_input, llm_chain):
+def process_message(user_input, llm_chain, llm):
     try:
         # Get response from the LLM
         llm_response = llm_chain.invoke({"input": user_input})
@@ -260,10 +300,12 @@ def process_message(user_input, llm_chain):
             add_appointment(details['name'], details['email'], details['date'], details['time'], purpose)
             st.session_state['current_name'] = details['name']
             st.session_state['current_email'] = details['email']
-            
-            return f"{clean_response}\n\nAppointment confirmed for:\nName: {details['name']}\nEmail: {details['email']}\nDate: {details['date']}\nTime: {details['time']}\nPurpose: {purpose}"
+
+            # Use the LLM to generate a personalized confirmation message
+            return generate_confirmation_message(llm, details, clean_response)
         
         elif details.get('action') == 'retrieve':
+            
             # Get name and email for retrieval
             name = details.get('name') or st.session_state.get('current_name', '')
             email = details.get('email') or st.session_state.get('current_email', '')
@@ -288,16 +330,59 @@ def process_message(user_input, llm_chain):
                 else:
                     return f"{clean_response}\n\nYou don't have any appointments scheduled."
             
-            response = f"{clean_response}\n\nHere are your appointments:\n\n"
-            for appt in appointments:
-                # Handle old database format (without email) or new format (with email)
-                if len(appt) >= 6:  # New format with email
-                    response += f"Name: {appt[1]}, Email: {appt[2]}, Date: {appt[3]}, Time: {appt[4]}, Purpose: {appt[5]}\n"
-                else:  # Old format without email
-                    response += f"Name: {appt[1]}, Date: {appt[2]}, Time: {appt[3]}, Purpose: {appt[4]}\n"
+            # Prepare appointment data for the LLM
+            appointments_info = []
+            columns = get_table_structure()
             
-            return response
-        
+            for appt in appointments:
+                appt_dict = {columns[i]: appt[i] for i in range(len(appt)) if i < len(columns)}
+                appointments_info.append({
+                    'date': appt_dict.get('date', 'N/A'),
+                    'time': appt_dict.get('time', 'N/A'),
+                    'name': appt_dict.get('name', 'N/A'),
+                    'email': appt_dict.get('email', 'N/A'),
+                    'purpose': appt_dict.get('purpose', 'N/A')
+                })
+            
+            # Ask the LLM to format the appointment list
+            appointments_text = "\n".join([
+                f"Appointment {i+1}:\n" +
+                f"- Date: {appt['date']}\n" +
+                f"- Time: {appt['time']}\n" +
+                f"- Name: {appt['name']}\n" +
+                f"- Email: {appt['email']}\n" +
+                f"- Purpose: {appt['purpose']}"
+                for i, appt in enumerate(appointments_info)
+            ])
+            
+            appointments_prompt = f"""
+            The user has asked to retrieve their appointment information.
+            
+            Here are the appointments found in our system:
+            
+            {appointments_text}
+            
+            Please format this information in a friendly, easy-to-read way to present back to the user.
+            """
+            
+            try:
+                formatted_appointments = llm.invoke(appointments_prompt).content
+                return f"{clean_response}\n\n{formatted_appointments}"
+            except Exception as e:
+                # Fallback if LLM fails
+                response = f"{clean_response}\n\nHere are your appointments:\n\n"
+                for i, appt in enumerate(appointments_info):
+                    response += f"📅 Date: {appt['date']}\n"
+                    response += f"⏰ Time: {appt['time']}\n"
+                    response += f"👤 Name: {appt['name']}\n"
+                    response += f"📧 Email: {appt['email']}\n"
+                    
+                    if appt['purpose'] and appt['purpose'] != 'N/A':
+                        response += f"📝 Purpose: {appt['purpose']}\n"
+                    
+                    response += "\n"
+                return response
+            
         # Default response if no action is determined but details were found
         return clean_response
     
@@ -320,7 +405,7 @@ def main():
     if 'llm_chain' not in st.session_state:
         try:
             # Initialize LLM chain and store in session state
-            st.session_state['llm_chain'] = setup_llm()
+            st.session_state['llm_chain'], st.session_state['llm'] = setup_llm()
         except Exception as e:
             st.error(f"Error initializing LLM: {str(e)}")
             st.error("Please make sure you have set the GOOGLE_API_KEY environment variable or added it to Streamlit secrets.")
@@ -351,7 +436,7 @@ def main():
             st.write(user_input)
         
         # Generate response using the LLM chain
-        response = process_message(user_input, st.session_state['llm_chain'])
+        response = process_message(user_input, st.session_state['llm_chain'], st.session_state['llm'])
         
         # Add assistant response to chat history
         st.session_state.messages.append({"role": "assistant", "content": response})
