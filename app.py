@@ -60,27 +60,19 @@ def get_appointments(name=None, email=None, date=None):
     query = "SELECT * FROM appointments"
     params = []
     
-    if name and email and date:
-        query += " WHERE name = ? AND email = ? AND date = ?"
-        params = [name, email, date]
-    elif name and email:
-        query += " WHERE name = ? AND email = ?"
-        params = [name, email]
-    elif name and date:
-        query += " WHERE name = ? AND date = ?"
-        params = [name, date]
-    elif email and date:
-        query += " WHERE email = ? AND date = ?"
-        params = [email, date]
-    elif name:
-        query += " WHERE name = ?"
-        params = [name]
-    elif email:
-        query += " WHERE email = ?"
-        params = [email]
-    elif date:
-        query += " WHERE date = ?"
-        params = [date]
+    conditions = []
+    if name:
+        conditions.append("name = ?")
+        params.append(name)
+    if email:
+        conditions.append("email = ?")
+        params.append(email)
+    if date:
+        conditions.append("date = ?")
+        params.append(date)
+    
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
     
     query += " ORDER BY date, time"
     
@@ -93,15 +85,9 @@ def check_appointment_exists(name, email, date, time):
     conn = sqlite3.connect('appointments.db')
     c = conn.cursor()
     
-    try:
-        c.execute("SELECT * FROM appointments WHERE name = ? AND email = ? AND date = ? AND time = ?", 
-                (name, email, date, time))
-        result = c.fetchone()
-    except sqlite3.OperationalError:
-        # Fallback if email column doesn't exist yet
-        c.execute("SELECT * FROM appointments WHERE name = ? AND date = ? AND time = ?", 
-                (name, date, time))
-        result = c.fetchone()
+    c.execute("SELECT * FROM appointments WHERE name = ? AND email = ? AND date = ? AND time = ?", 
+            (name, email, date, time))
+    result = c.fetchone()
     
     conn.close()
     return result is not None
@@ -210,35 +196,13 @@ def extract_appointment_details(response_text):
     
     return details, clean_response
 
-# Generate a confirmation message using the LLM
-def generate_confirmation_message(llm, details, clean_response):
-    prompt = f"""
-    Based on our conversation, I've booked an appointment with the following details:
-    - Name: {details['name']}
-    - Email: {details['email']}
-    - Date: {details['date']}
-    - Time: {details['time']}
-    - Purpose: {details.get('purpose', 'General appointment')}
-    """
-    
+# Generate a message using the LLM for a specific purpose
+def generate_llm_message(llm, prompt_text):
     try:
-        confirmation = llm.invoke(prompt).content
-        # Combine the original clean response with the generated confirmation
-        if clean_response:
-            return f"{clean_response}\n\n{confirmation}"
-        return confirmation
+        return llm.invoke(prompt_text).content
     except Exception as e:
-        # Fallback if the LLM fails
-        return f"""Appointment confirmed!
-        
-        Your appointment has been scheduled for {details['date']} at {details['time']}.
-        
-        Details:
-        - Name: {details['name']}
-        - Email: {details['email']}
-        - Purpose: {details.get('purpose', 'General appointment')}
-        
-        Thank you for booking with us!"""
+        st.warning(f"Failed to generate message with LLM: {str(e)}")
+        return None
 
 # Helper function to validate email format
 def is_valid_email(email):
@@ -253,6 +217,52 @@ def get_table_structure():
     columns = c.fetchall()
     conn.close()
     return [col[1] for col in columns]
+
+# Format appointment data for display
+def format_appointments(appointments, clean_response, llm):
+    if not appointments:
+        return f"{clean_response}\n\nYou don't have any appointments scheduled."
+    
+    # Prepare appointment data for the LLM
+    appointments_info = []
+    columns = get_table_structure()
+    
+    for appt in appointments:
+        appt_dict = {columns[i]: appt[i] for i in range(len(appt)) if i < len(columns)}
+        appointments_info.append({
+            'date': appt_dict.get('date', 'N/A'),
+            'time': appt_dict.get('time', 'N/A'),
+            'name': appt_dict.get('name', 'N/A'),
+            'email': appt_dict.get('email', 'N/A'),
+            'purpose': appt_dict.get('purpose', 'N/A')
+        })
+    
+    # Ask the LLM to format the appointment list
+    appointments_text = "\n".join([
+        f"Appointment {i+1}:\n" +
+        f"- Date: {appt['date']}\n" +
+        f"- Time: {appt['time']}\n" +
+        f"- Name: {appt['name']}\n" +
+        f"- Email: {appt['email']}\n" +
+        f"- Purpose: {appt['purpose']}"
+        for i, appt in enumerate(appointments_info)
+    ])
+    
+    appointments_prompt = f"""
+    The user has asked to retrieve their appointment information.
+    
+    Here are the appointments found in our system:
+    
+    {appointments_text}
+    
+    Please format this information in a friendly, easy-to-read way to present back to the user.
+    """
+    
+    formatted_appointments = generate_llm_message(llm, appointments_prompt)
+    
+    if formatted_appointments:
+        return f"{clean_response}\n\n{formatted_appointments}"
+    
 
 # Chatbot logic
 def process_message(user_input, llm_chain, llm):
@@ -301,11 +311,24 @@ def process_message(user_input, llm_chain, llm):
             st.session_state['current_name'] = details['name']
             st.session_state['current_email'] = details['email']
 
-            # Use the LLM to generate a personalized confirmation message
-            return generate_confirmation_message(llm, details, clean_response)
+            # Generate a confirmation message
+            prompt = f"""
+            Based on our conversation, I've booked an appointment with the following details:
+            - Name: {details['name']}
+            - Email: {details['email']}
+            - Date: {details['date']}
+            - Time: {details['time']}
+            - Purpose: {details.get('purpose', 'General appointment')}
+            
+            Please format this information in a friendly, easy-to-read way to present back to the user.
+            """
+            
+            confirmation = generate_llm_message(llm, prompt)
+            if confirmation:
+                return f"{clean_response}\n\n{confirmation}"
+
         
         elif details.get('action') == 'retrieve':
-            
             # Get name and email for retrieval
             name = details.get('name') or st.session_state.get('current_name', '')
             email = details.get('email') or st.session_state.get('current_email', '')
@@ -324,64 +347,8 @@ def process_message(user_input, llm_chain, llm):
             # Get appointments
             appointments = get_appointments(name, email, date)
             
-            if not appointments:
-                if date:
-                    return f"{clean_response}\n\nYou don't have any appointments on {date}."
-                else:
-                    return f"{clean_response}\n\nYou don't have any appointments scheduled."
-            
-            # Prepare appointment data for the LLM
-            appointments_info = []
-            columns = get_table_structure()
-            
-            for appt in appointments:
-                appt_dict = {columns[i]: appt[i] for i in range(len(appt)) if i < len(columns)}
-                appointments_info.append({
-                    'date': appt_dict.get('date', 'N/A'),
-                    'time': appt_dict.get('time', 'N/A'),
-                    'name': appt_dict.get('name', 'N/A'),
-                    'email': appt_dict.get('email', 'N/A'),
-                    'purpose': appt_dict.get('purpose', 'N/A')
-                })
-            
-            # Ask the LLM to format the appointment list
-            appointments_text = "\n".join([
-                f"Appointment {i+1}:\n" +
-                f"- Date: {appt['date']}\n" +
-                f"- Time: {appt['time']}\n" +
-                f"- Name: {appt['name']}\n" +
-                f"- Email: {appt['email']}\n" +
-                f"- Purpose: {appt['purpose']}"
-                for i, appt in enumerate(appointments_info)
-            ])
-            
-            appointments_prompt = f"""
-            The user has asked to retrieve their appointment information.
-            
-            Here are the appointments found in our system:
-            
-            {appointments_text}
-            
-            Please format this information in a friendly, easy-to-read way to present back to the user.
-            """
-            
-            try:
-                formatted_appointments = llm.invoke(appointments_prompt).content
-                return f"{clean_response}\n\n{formatted_appointments}"
-            except Exception as e:
-                # Fallback if LLM fails
-                response = f"{clean_response}\n\nHere are your appointments:\n\n"
-                for i, appt in enumerate(appointments_info):
-                    response += f"📅 Date: {appt['date']}\n"
-                    response += f"⏰ Time: {appt['time']}\n"
-                    response += f"👤 Name: {appt['name']}\n"
-                    response += f"📧 Email: {appt['email']}\n"
-                    
-                    if appt['purpose'] and appt['purpose'] != 'N/A':
-                        response += f"📝 Purpose: {appt['purpose']}\n"
-                    
-                    response += "\n"
-                return response
+            # Format and return appointments
+            return format_appointments(appointments, clean_response, llm)
             
         # Default response if no action is determined but details were found
         return clean_response
