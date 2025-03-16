@@ -45,41 +45,9 @@ def init_db():
     
     conn.close()
 
-def add_appointment(name, email, date, time, purpose):
-    conn = sqlite3.connect('appointments.db')
-    c = conn.cursor()
-    c.execute("INSERT INTO appointments (name, email, date, time, purpose) VALUES (?, ?, ?, ?, ?)",
-              (name, email, date, time, purpose))
-    conn.commit()
-    conn.close()
 
-def get_appointments(name=None, email=None, date=None):
-    conn = sqlite3.connect('appointments.db')
-    c = conn.cursor()
-    
-    query = "SELECT * FROM appointments"
-    params = []
-    
-    conditions = []
-    if name:
-        conditions.append("name = ?")
-        params.append(name)
-    if email:
-        conditions.append("email = ?")
-        params.append(email)
-    if date:
-        conditions.append("date = ?")
-        params.append(date)
-    
-    if conditions:
-        query += " WHERE " + " AND ".join(conditions)
-    
-    query += " ORDER BY date, time"
-    
-    c.execute(query, params)
-    appointments = c.fetchall()
-    conn.close()
-    return appointments
+
+
 
 def check_appointment_exists(name, email, date, time):
     conn = sqlite3.connect('appointments.db')
@@ -144,57 +112,6 @@ def setup_llm():
     
     return chain, llm
 
-# Process the LLM response to extract appointment details
-def extract_appointment_details(response_text):
-    details_pattern = r'<APPOINTMENT_DETAILS>(.*?)</APPOINTMENT_DETAILS>'
-    match = re.search(details_pattern, response_text, re.DOTALL)
-    
-    if not match:
-        return None, response_text.strip()
-    
-    details_text = match.group(1).strip()
-    details = {}
-    
-    # Extract each detail
-    name_match = re.search(r'name:\s*(.*)', details_text)
-    email_match = re.search(r'email:\s*(.*)', details_text)
-    date_match = re.search(r'date:\s*(.*)', details_text)
-    time_match = re.search(r'time:\s*(.*)', details_text)
-    purpose_match = re.search(r'purpose:\s*(.*)', details_text)
-    action_match = re.search(r'action:\s*(.*)', details_text)
-    
-    # Add extracted details to dictionary
-    if name_match:
-        details['name'] = name_match.group(1).strip()
-    if email_match:
-        details['email'] = email_match.group(1).strip()
-    if date_match:
-        date_str = date_match.group(1).strip()
-        parsed_date = dateparser.parse(date_str)
-        if parsed_date:
-            details['date'] = parsed_date.strftime('%Y-%m-%d')
-        else:
-            details['date'] = date_str
-    if time_match:
-        time_str = time_match.group(1).strip()
-        # Handle time parsing
-        if ':' not in time_str:
-            # Add a default :00 minutes if only hours are provided
-            try:
-                hour = int(time_str)
-                time_str = f"{hour:02d}:00"
-            except ValueError:
-                pass
-        details['time'] = time_str
-    if purpose_match:
-        details['purpose'] = purpose_match.group(1).strip()
-    if action_match:
-        details['action'] = action_match.group(1).strip()
-    
-    # Remove the appointment details section from the response
-    clean_response = re.sub(details_pattern, '', response_text, flags=re.DOTALL).strip()
-    
-    return details, clean_response
 
 # Generate a message using the LLM for a specific purpose
 def generate_llm_message(llm, prompt_text):
