@@ -41,14 +41,8 @@ def init_db():
     
     conn.close()
 
-def add_appointment(name, email, date, time, purpose):
-    conn = sqlite3.connect('appointments.db')
-    c = conn.cursor()
-    c.execute("INSERT INTO appointments (name, email, date, time, purpose) VALUES (?, ?, ?, ?, ?)",
-              (name, email, date, time, purpose))
-    conn.commit()
-    conn.close()
 
+<<<<<<< HEAD
 def get_appointments(name=None, email=None, date=None):
     conn = sqlite3.connect('appointments.db')
     c = conn.cursor()
@@ -83,6 +77,10 @@ def get_appointments(name=None, email=None, date=None):
     
     conn.close()
     return appointments
+=======
+
+
+>>>>>>> refs/remotes/origin/main
 
 def check_appointment_exists(name, email, date, time):
     conn = sqlite3.connect('appointments.db')
@@ -172,6 +170,7 @@ def setup_llm():
     
     return chain, llm
 
+<<<<<<< HEAD
 def is_valid_email(email):
     email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return bool(re.match(email_pattern, email))
@@ -265,6 +264,8 @@ def extract_appointment_details(response_text):
     clean_response = re.sub(details_pattern, '', response_text, flags=re.DOTALL).strip()
     
     return details, clean_response
+=======
+>>>>>>> refs/remotes/origin/main
 
 def format_appointment_response(data, response_type, llm, clean_response=None):
     if response_type == "retrieval" and isinstance(data, list):
